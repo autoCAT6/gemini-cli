@@ -3659,4 +3659,141 @@ ${JSON.stringify(
       });
     });
   });
+
+  describe('generateEphemeralStream', () => {
+    /** Helper: mock generateContentStream to yield the given chunks. */
+    function mockStream(...chunks: Array<{ text: string }>) {
+      const responses = chunks.map((c) => ({
+        candidates: [{ content: { parts: [c] } }],
+      }));
+      vi.mocked(mockContentGenerator.generateContentStream).mockResolvedValue(
+        (async function* () {
+          for (const r of responses) yield r;
+        })() as unknown as AsyncGenerator<
+          import('@google/genai').GenerateContentResponse
+        >,
+      );
+    }
+
+    /** Collect all text from the async generator. */
+    async function collect(gen: AsyncGenerator<string>): Promise<string> {
+      let result = '';
+      for await (const chunk of gen) result += chunk;
+      return result;
+    }
+
+    it('streams text chunks from generateContentStream', async () => {
+      mockStream({ text: 'fo' }, { text: 'ur' });
+
+      const answer = await collect(
+        client.generateEphemeralStream(
+          'what is 2+2?',
+          new AbortController().signal,
+        ),
+      );
+
+      expect(answer).toBe('four');
+      expect(mockContentGenerator.generateContentStream).toHaveBeenCalledOnce();
+    });
+
+    it('does not mutate chat history', async () => {
+      mockStream({ text: 'ok' });
+
+      const historyBefore = client.getHistory();
+      await collect(
+        client.generateEphemeralStream(
+          'side question',
+          new AbortController().signal,
+        ),
+      );
+      const historyAfter = client.getHistory();
+
+      expect(historyAfter).toEqual(historyBefore);
+    });
+
+    it('strips functionCall and functionResponse parts from context', async () => {
+      client.setHistory([
+        { role: 'user', parts: [{ text: 'read a file' }] },
+        {
+          role: 'model',
+          parts: [
+            { functionCall: { name: 'read_file', args: { path: '/foo' } } },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'read_file',
+                response: { output: 'contents' },
+              },
+            },
+          ],
+        },
+        { role: 'model', parts: [{ text: 'Here is the file.' }] },
+      ] as Content[]);
+
+      mockStream({ text: 'answer' });
+
+      await collect(
+        client.generateEphemeralStream(
+          'follow-up',
+          new AbortController().signal,
+        ),
+      );
+
+      const { contents } = vi.mocked(mockContentGenerator.generateContentStream)
+        .mock.calls[0][0] as { contents: Content[] };
+      for (const turn of contents) {
+        for (const part of turn.parts ?? []) {
+          expect(part).not.toHaveProperty('functionCall');
+          expect(part).not.toHaveProperty('functionResponse');
+        }
+      }
+    });
+
+    it('drops turns that become empty after stripping tool parts', async () => {
+      client.setHistory([
+        { role: 'user', parts: [{ text: 'do something' }] },
+        {
+          role: 'model',
+          parts: [{ functionCall: { name: 'some_tool', args: {} } }],
+        },
+      ] as Content[]);
+
+      mockStream({ text: 'done' });
+
+      await collect(
+        client.generateEphemeralStream(
+          'next question',
+          new AbortController().signal,
+        ),
+      );
+
+      const { contents } = vi.mocked(mockContentGenerator.generateContentStream)
+        .mock.calls[0][0] as { contents: Content[] };
+      const modelTurns = contents.filter((c) => c.role === 'model');
+      expect(modelTurns).toHaveLength(0);
+    });
+
+    it('yields nothing when stream has no text parts', async () => {
+      vi.mocked(mockContentGenerator.generateContentStream).mockResolvedValue(
+        (async function* () {
+          yield { candidates: [] };
+        })() as unknown as AsyncGenerator<
+          import('@google/genai').GenerateContentResponse
+        >,
+      );
+
+      const answer = await collect(
+        client.generateEphemeralStream(
+          'anything',
+          new AbortController().signal,
+        ),
+      );
+
+      expect(answer).toBe('');
+    });
+  });
 });

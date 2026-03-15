@@ -34,7 +34,12 @@ import {
   retryWithBackoff,
   type RetryAvailabilityContext,
 } from '../utils/retry.js';
-import type { ValidationRequiredError } from '../utils/googleQuotaErrors.js';
+import {
+  type ValidationRequiredError,
+  RetryableQuotaError,
+  classifyGoogleError,
+} from '../utils/googleQuotaErrors.js';
+import { delay } from '../utils/delay.js';
 import { getErrorMessage, isAbortError } from '../utils/errors.js';
 import { tokenLimit } from './tokenLimits.js';
 import type {
@@ -56,7 +61,7 @@ import type {
 import {
   ContentRetryFailureEvent,
   NextSpeakerCheckEvent,
-  type LlmRole,
+  LlmRole,
 } from '../telemetry/types.js';
 import { uiTelemetryService } from '../telemetry/uiTelemetry.js';
 import type { IdeContext, File } from '../ide/types.js';
@@ -266,6 +271,86 @@ export class GeminiClient {
 
   getHistory(): readonly Content[] {
     return this.getChat().getHistory();
+  }
+
+  /**
+   * Sends a one-shot question to the model using the current conversation as
+   * context, but does NOT record the exchange in the conversation history.
+   * Used by /qq for ephemeral side queries.
+   */
+  async *generateEphemeralStream(
+    question: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<string> {
+    const modelConfigKey: ModelConfigKey = {
+      model: this.config.getActiveModel(),
+      isChatModel: true,
+    };
+    // Include curated history but strip functionCall/functionResponse parts —
+    // generateContent has no tool declarations, so sending tool turns would
+    // cause a 400 from the API. This matches CC's /btw: text context only.
+    const curatedHistory = this.getChat().getHistory(true);
+    const textOnlyHistory = curatedHistory
+      .map((content) => ({
+        ...content,
+        parts: (content.parts ?? []).filter((p) => p.text !== undefined),
+      }))
+      .filter((content) => content.parts.length > 0);
+    const contents: Content[] = [
+      ...textOnlyHistory,
+      { role: 'user', parts: [{ text: question }] },
+    ];
+
+    const { model: resolvedModel, generateContentConfig } =
+      this.config.modelConfigService.getResolvedConfig(modelConfigKey);
+    const systemInstruction = getCoreSystemPrompt(
+      this.config,
+      this.config.getUserMemory(),
+    );
+    const requestConfig: GenerateContentConfig = {
+      ...generateContentConfig,
+      abortSignal: signal,
+      systemInstruction,
+    };
+
+    // Retry up to 3 times on transient rate-limit errors (the normal message
+    // flow uses retryWithBackoff; we keep it simple here for the ephemeral path).
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const stream =
+          await this.getContentGeneratorOrFail().generateContentStream(
+            { model: resolvedModel, config: requestConfig, contents },
+            this.lastPromptId,
+            LlmRole.UTILITY_TOOL,
+          );
+
+        for await (const chunk of stream) {
+          const text = chunk.candidates?.[0]?.content?.parts
+            ?.filter((p) => p.text)
+            .map((p) => p.text)
+            .join('');
+          if (text) {
+            yield text;
+          }
+        }
+        return; // Success — exit the retry loop.
+      } catch (error) {
+        lastError = error;
+        const classified = classifyGoogleError(error);
+        if (
+          classified instanceof RetryableQuotaError &&
+          attempt < maxAttempts
+        ) {
+          const waitMs = classified.retryDelayMs ?? 5_000;
+          await delay(waitMs, signal);
+          continue;
+        }
+        throw classified; // Non-retryable or final attempt — surface the error.
+      }
+    }
+    throw lastError; // Should not reach here, but satisfy TypeScript.
   }
 
   stripThoughtsFromHistory() {
