@@ -1286,8 +1286,8 @@ describe('ChatRecordingService', () => {
   });
 
   describe('fork', () => {
-    beforeEach(() => {
-      chatRecordingService.initialize();
+    beforeEach(async () => {
+      await chatRecordingService.initialize();
     });
 
     it('should return null when recording is disabled', () => {
@@ -1339,17 +1339,12 @@ describe('ChatRecordingService', () => {
       });
 
       const originalFile = chatRecordingService.getConversationFilePath()!;
-      const originalBefore = JSON.parse(
-        fs.readFileSync(originalFile, 'utf8'),
-      ) as ConversationRecord;
+      const contentBefore = fs.readFileSync(originalFile, 'utf8');
 
       chatRecordingService.fork();
 
-      const originalAfter = JSON.parse(
-        fs.readFileSync(originalFile, 'utf8'),
-      ) as ConversationRecord;
-      expect(originalAfter.sessionId).toBe(originalBefore.sessionId);
-      expect(originalAfter.messages).toEqual(originalBefore.messages);
+      const contentAfter = fs.readFileSync(originalFile, 'utf8');
+      expect(contentAfter).toBe(contentBefore);
     });
   });
 

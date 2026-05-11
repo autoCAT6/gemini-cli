@@ -12,8 +12,6 @@ import { CommandKind, type SlashCommand } from './types.js';
  * Saves a snapshot of the current conversation to a new session file.
  * Both the original and the forked session are independently resumable —
  * you can explore one direction while preserving the other.
- *
- * Inspired by Claude Code's /fork command.
  */
 
 export const forkCommand: SlashCommand = {
@@ -22,18 +20,31 @@ export const forkCommand: SlashCommand = {
     'Save a fork of the current conversation to branch from this point',
   kind: CommandKind.BUILT_IN,
   autoExecute: true,
-  action: async (context) => {
-    const config = context.services.config;
-    const client = config?.getGeminiClient();
-    const recordingService = client?.getChatRecordingService();
+  action: (context) => {
+    const agentContext = context.services.agentContext;
+    const config = agentContext?.config;
+    if (!config)
+      return {
+        type: 'message',
+        messageType: 'error',
+        content: 'Config not found',
+      };
 
-    if (!config || !recordingService) {
+    const client = agentContext.geminiClient;
+    if (!client)
+      return {
+        type: 'message',
+        messageType: 'error',
+        content: 'Client not initialized',
+      };
+
+    const recordingService = client.getChatRecordingService();
+    if (!recordingService)
       return {
         type: 'message',
         messageType: 'error',
         content: 'Could not access session state.',
       };
-    }
 
     const shortId = recordingService.fork();
 
@@ -48,7 +59,7 @@ export const forkCommand: SlashCommand = {
     return {
       type: 'message',
       messageType: 'info',
-      content: `Fork saved (${shortId}).\nResume with: gemini --resume ${shortId}\nOr browse sessions with: /chat`,
+      content: `Fork saved (${shortId}).\nResume with: gemini --resume ${shortId}\nOr browse sessions with: /resume`,
     };
   },
 };

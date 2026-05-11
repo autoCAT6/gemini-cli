@@ -102,6 +102,28 @@ When working on multiple tasks at once, you can use
 [Git worktrees](./git-worktrees.md) to give each Gemini session its own copy of
 the codebase. This prevents changes in one session from colliding with another.
 
+## Forking sessions
+
+The `/fork` command saves a snapshot of the current conversation as a new,
+independent session. Both the original and the forked session can continue
+independently — changes in one do not affect the other.
+
+```text
+> /fork
+Fork saved (a1b2c3d4).
+Resume with: gemini --resume a1b2c3d4
+Or browse sessions with: /resume
+```
+
+This is useful when you want to explore a risky direction while preserving the
+current state, compare different approaches side-by-side in separate terminals,
+or hand off a sub-task to a parallel session.
+
+**Why `/fork` instead of `--resume` in a second terminal?** If you `--resume`
+the same session ID in two terminals simultaneously, both processes write to the
+same file with no locking — the last write silently overwrites the other's
+messages. `/fork` avoids this by creating a new file with a new session ID.
+
 ## Managing sessions
 
 You can list and delete sessions to keep your history organized and manage disk

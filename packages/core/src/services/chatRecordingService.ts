@@ -680,34 +680,48 @@ export class ChatRecordingService {
   fork(): string | null {
     if (!this.conversationFile) return null;
 
-    const conversation = this.readConversation();
+    const conversation = this.getConversation();
     if (!conversation || conversation.messages.length === 0) {
       return null;
     }
 
-    const forkSessionId = randomUUID();
-    const shortId = forkSessionId.slice(0, 8);
-    const timestamp = new Date().toISOString().slice(0, 16).replace(/:/g, '-');
-    const filename = `${SESSION_FILE_PREFIX}${timestamp}-${shortId}.json`;
+    try {
+      const forkSessionId = randomUUID();
+      const shortId = forkSessionId.slice(0, 8);
+      const timestamp = new Date()
+        .toISOString()
+        .slice(0, 16)
+        .replace(/:/g, '-');
+      const filename = `${SESSION_FILE_PREFIX}${timestamp}-${shortId}.json`;
 
-    const forked: ConversationRecord = {
-      ...conversation,
-      sessionId: forkSessionId,
-      startTime: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    };
+      const forked: ConversationRecord = {
+        ...conversation,
+        sessionId: forkSessionId,
+        startTime: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      };
 
-    const chatsDir = path.join(
-      this.context.config.storage.getProjectTempDir(),
-      CHATS_DIR_NAME,
-    );
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(chatsDir, filename),
-      JSON.stringify(forked, null, 2),
-    );
+      const chatsDir = path.join(
+        this.context.config.storage.getProjectTempDir(),
+        CHATS_DIR_NAME,
+      );
+      fs.mkdirSync(chatsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(chatsDir, filename),
+        JSON.stringify(forked, null, 2),
+      );
 
-    return shortId;
+      return shortId;
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOSPC') {
+        this.conversationFile = null;
+        this.cachedConversation = null;
+        debugLogger.warn(ENOSPC_WARNING_MESSAGE);
+        return null;
+      }
+      debugLogger.error('Error forking conversation.', error);
+      throw error;
+    }
   }
 
   getConversationFilePath(): string | null {
